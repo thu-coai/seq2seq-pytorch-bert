@@ -6,7 +6,7 @@ import os
 import json
 import shutil
 cwd = os.path.abspath(os.path.dirname(__file__))
-path = cwd
+path = os.path.join(cwd, '..', 'cotk')
 
 def setup_function(function):
 	import sys
@@ -39,7 +39,7 @@ def modify_args(args):
 	args.cuda = False
 	args.restore = None
 	args.wvclass = 'Glove'
-	args.wvpath = os.path.join(path, 'dummy_glove', '300d')
+	args.wvpath = os.path.join(path, 'tests', 'wordvector', 'dummy_glove', '300d')
 	args.out_dir = os.path.join(cwd, 'output_test')
 	args.log_dir = os.path.join(cwd, 'tensorboard_test')
 	args.model_dir = os.path.join(cwd, 'model_test')
@@ -52,7 +52,7 @@ def modify_args(args):
 	args.epochs = 1
 	args.batch_per_epoch = 5
 	args.batch_size = 5
-	args.datapath = os.path.join(path, 'dummy_opensubtitles')
+	args.datapath = os.path.join(path, 'tests', 'dataloader', 'dummy_opensubtitles')
 
 def test_train(mocker):
 	def side_effect_train(args, *others):
