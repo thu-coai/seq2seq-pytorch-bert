@@ -44,6 +44,8 @@ def modify_args(args):
 	args.log_dir = os.path.join(cwd, 'tensorboard_test')
 	args.model_dir = os.path.join(cwd, 'model_test')
 	args.cache_dir = os.path.join(cwd, 'cache_test')
+	#args.bert_vocab = "/home/niuyilin/pretrained_BERT/bert-base-uncased-vocab.txt"
+	#args.bert_model = "/home/niuyilin/pretrained_BERT/bert-base-uncased.tar.gz"
 
 	args.name = 'test_seq2seq_pytorch_bert'
 	args.wvclass = 'Glove'
@@ -80,10 +82,3 @@ def test_test(mocker):
 		args.mode = 'test'
 		main(args, *others)
 	mock = mocker.patch('main.main', side_effect=side_effect_test)
-	run()
-	old_res = json.load(open("./result.json", "r"))
-	run()
-	new_res = json.load(open("./result.json", "r"))
-	for key in old_res:
-		if key[-9:] == 'hashvalue':
-			assert old_res[key] == new_res[key]
