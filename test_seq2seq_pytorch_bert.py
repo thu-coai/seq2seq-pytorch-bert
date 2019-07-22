@@ -82,3 +82,4 @@ def test_test(mocker):
 		args.mode = 'test'
 		main(args, *others)
 	mock = mocker.patch('main.main', side_effect=side_effect_test)
+	run()
