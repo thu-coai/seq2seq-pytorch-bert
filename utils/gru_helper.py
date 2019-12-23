@@ -15,39 +15,40 @@ F_GRUCell = torch._C._VariableFunctions.gru_cell
 
 def sortSequence(data, length):
 	shape = data.shape
-	len, fsize = shape[0], shape[-1]
-	data = data.reshape(len, -1, fsize)
+	length_size = len(length.shape)
+	seqlen, fsize = shape[0], shape[1 + length_size:]
+	data = data.reshape(*((seqlen, -1) + fsize))
 	batch_size = data.shape[1]
 	length = length.reshape(-1)
 
 	zero_num = np.sum(length == 0)
 	memo = list(reversed(np.argsort(length).tolist()))[:batch_size-zero_num]
-	res = zeros(data.shape[0], batch_size - zero_num, data.shape[-1])
+	res = zeros(*((seqlen, batch_size - zero_num) + fsize))
 	for i, idx in enumerate(memo):
-		res[:, i, :] = data[:, idx, :]
-	return res, sorted(length, reverse=True)[: batch_size - zero_num], (shape, memo, zero_num)
+		res[:, i] = data[:, idx]
+	return res, sorted(length, reverse=True)[: batch_size - zero_num], (shape, memo, zero_num, fsize)
 
 def sortSequenceByMemo(data, memo):
-	data = data.reshape(-1, data.shape[-1])
+	shape, memo, zero_num, fsize = memo
+	data = data.reshape(*((-1,) + fsize))
 	batch_size = data.shape[0]
-	shape, memo, zero_num = memo
-	res = zeros(batch_size - zero_num, data.shape[-1])
+	res = zeros(*((batch_size - zero_num,) + fsize))
 	for i, idx in enumerate(memo):
-		res[i, :] = data[idx, :]
+		res[i] = data[idx]
 	return res
 
 def revertSequence(data, memo, isseq=False):
-	shape, memo, zero_num = memo
+	shape, memo, zero_num, fsize = memo
 	if isseq:
-		res = zeros(data.shape[0], data.shape[1]+zero_num, data.shape[2])
+		res = zeros(*((data.shape[0], data.shape[1] + zero_num) + (data.shape[-len(fsize):])))
 		for i, idx in enumerate(memo):
-			res[:, idx, :] = data[:, i, :]
-		return res.reshape(*((res.shape[0], )+shape[1:-1]+(res.shape[-1], )))
+			res[:, idx] = data[:, i]
+		return res.reshape(*((res.shape[0], ) + shape[1:-len(fsize)] + res.shape[-len(fsize):]))
 	else:
-		res = zeros(data.shape[0]+zero_num, data.shape[1])
+		res = zeros(*((data.shape[0] + zero_num,) + data.shape[-len(fsize):]) )
 		for i, idx in enumerate(memo):
-			res[idx, :] = data[i, :]
-		return res.reshape(*(shape[1:-1]+(res.shape[-1], )))
+			res[idx] = data[i]
+		return res.reshape(*(shape[1:-len(fsize)] + res.shape[-len(fsize):]))
 
 def flattenSequence(data, length):
 	arr = []
@@ -61,9 +62,9 @@ def copySequence(data, length): # for BOW loss
 		arr.append(data[i].repeat(length[i], 1))
 	return torch.cat(arr, dim=0)
 
-def generateMask(seqlen, length, type=int):
+def generateMask(seqlen, length, type=int, device=None):
 	return Tensor(
-		(np.expand_dims(np.arange(seqlen), 1) < np.expand_dims(length, 0)).astype(type))
+		(np.expand_dims(np.arange(seqlen), 1) < np.expand_dims(length, 0)).astype(type), device=device)
 
 def maskedSoftmax(data, length):
 	mask = generateMask(data.shape[0], length)
@@ -96,8 +97,14 @@ class MyGRU(nn.Module):
 	def getInitialParameter(self, batch_size):
 		return self.h_init.repeat(1, batch_size, 1)
 
-	def forward(self, incoming, length, h_init=None, need_h=False):
+	def forward(self, incoming, length, h_init=None, need_h=False, repeat_dim=False):
+		#h = seqlen, batch, num_directions * hidden_size
+		#incoming: seqlen * batch * dim
 		sen_sorted, length_sorted, memo = sortSequence(incoming, length)
+		if repeat_dim:
+			shape = incoming.shape
+			sen_sorted = sen_sorted.reshape(shape[0], -1, shape[-1])
+			length_sorted = np.repeat(length_sorted, shape[-2])
 		left_batch_size = sen_sorted.shape[-2]
 		sen_packed = pack_padded_sequence(sen_sorted, length_sorted)
 		if h_init is None:
@@ -106,9 +113,13 @@ class MyGRU(nn.Module):
 			h_init = torch.unsqueeze(sortSequenceByMemo(h_init, memo), 0)
 		h, h_n = self.GRU(sen_packed, h_init)
 		h_n = h_n.transpose(0, 1).reshape(left_batch_size, -1)
+		if repeat_dim:
+			h_n = h_n.reshape(left_batch_size // shape[-2], shape[-2], -1)
 		h_n = revertSequence(h_n, memo)
 		if need_h:
 			h = pad_packed_sequence(h)[0]
+			if repeat_dim:
+				h = h.reshape(shape[0], left_batch_size // shape[-2], shape[-2], -1)
 			h = revertSequence(h, memo, True)
 			return h_n, h
 		else:
@@ -159,28 +170,34 @@ class DecoderRNN(nn.Module):
 				w = torch.argmax(w[:, start_id:], dim=1) + start_id
 				next_emb = inp.embLayer(w)
 			elif mode == "gumbel" or mode == "sample":
-				w_onehot = gumbel_max(w[:, start_id:])
+				w_onehot = gumbel_max(w[:, start_id:])[0]
 				w = torch.argmax(w_onehot, dim=1) + start_id
-				next_emb = torch.sum(torch.unsqueeze(w_onehot, -1) * inp.embLayer.weight[start_id:], 1)
+				#next_emb = torch.sum(torch.unsqueeze(w_onehot, -1) * inp.embLayer.weight[start_id:], 1)
+				next_emb = torch.einsum("ij,jk->ik", w_onehot, inp.embLayer.weight[start_id:])
 			elif mode == "samplek":
 				_, index = w[:, start_id:].topk(top_k, dim=-1, largest=True, sorted=True) # batch_size, top_k
 				mask = torch.zeros_like(w[:, start_id:]).scatter_(-1, index, 1.0)
 				w_onehot = gumbel_max_with_mask(w[:, start_id:], mask)
 				w = torch.argmax(w_onehot, dim=1) + start_id
-				next_emb = torch.sum(torch.unsqueeze(w_onehot, -1) * inp.embLayer.weight[start_id:], 1)
+				#next_emb = torch.sum(torch.unsqueeze(w_onehot, -1) * inp.embLayer.weight[start_id:], 1)
+				next_emb = torch.einsum("ij,jk->ik", w_onehot, inp.embLayer.weight[start_id:])
 
 			gen.w_o.append(w)
 			gen.emb.append(next_emb)
 
 			EOSmet.append(flag)
-			flag = flag | (w == dm.eos_id)
-			if torch.sum(flag).detach().cpu().numpy() == batch_size:
-				break
+			flag = flag | (w == dm.eos_id).byte()
 
-		EOSmet = 1-torch.stack(EOSmet)
-		gen.w_o = torch.stack(gen.w_o) * EOSmet.long()
-		gen.emb = torch.stack(gen.emb) * EOSmet.float().unsqueeze(-1)
-		gen.length = torch.sum(EOSmet, 0).detach().cpu().numpy()
+			if (i+1) % 10 == 0:
+				if torch.sum(flag).detach().cpu().numpy() == batch_size:
+					break
+
+		EOSmet =  1 - torch.stack(EOSmet)
+		gen.length = torch.sum(EOSmet.long(), 0).detach().cpu().numpy()
+		seqlen = max(gen.length)
+		EOSmet = EOSmet[:seqlen]
+		gen.w_o = torch.stack(gen.w_o[:seqlen]) * EOSmet.long()
+		gen.emb = torch.stack(gen.emb[:seqlen]) * EOSmet.float().unsqueeze(-1)
 
 		return gen
 
@@ -257,7 +274,7 @@ class DecoderRNN(nn.Module):
 
 			EOSmet.append(flag)
 
-			flag = flag | (w == dm.eos_id)
+			flag = flag | (w == dm.eos_id).byte()
 			if torch.sum(flag).detach().cpu().numpy() == batch_size * top_k:
 				break
 
@@ -297,49 +314,85 @@ class SingleGRU(DecoderRNN):
 	def getInitialParameter(self, batch_size):
 		return self.h_init.repeat(1, batch_size, 1)
 
-	def forward(self, incoming, length, h_init=None, need_h=False):
-		sen_sorted, length_sorted, memo = sortSequence(incoming, length)
-		left_batch_size = sen_sorted.shape[-2]
-		sen_packed = pack_padded_sequence(sen_sorted, length_sorted)
+	# def forward(self, incoming, length, h_init=None, need_h=False):
+	# 	sen_sorted, length_sorted, memo = sortSequence(incoming, length)
+	# 	left_batch_size = sen_sorted.shape[-2]
+	# 	sen_packed = pack_padded_sequence(sen_sorted, length_sorted)
+	# 	if h_init is None:
+	# 		h_init = self.getInitialParameter(left_batch_size)
+	# 	else:
+	# 		h_init = torch.unsqueeze(sortSequenceByMemo(h_init, memo), 0)
+	# 	h, h_n = self.GRU(sen_packed, h_init)
+	# 	h_n = h_n.transpose(0, 1).reshape(left_batch_size, -1)
+	# 	h_n = revertSequence(h_n, memo)
+	# 	if need_h:
+	# 		h = pad_packed_sequence(h)[0]
+	# 		h = revertSequence(h, memo, True)
+	# 		return h_n, h
+	# 	else:
+	# 		return h_n, None
+
+	def forward(self, incoming, length, h_init=None):
+		batch_size = incoming.shape[1]
+		seqlen = incoming.shape[0]
 		if h_init is None:
-			h_init = self.getInitialParameter(left_batch_size)
+			h_init = self.getInitialParameter(batch_size)
 		else:
-			h_init = torch.unsqueeze(sortSequenceByMemo(h_init, memo), 0)
-		h, h_n = self.GRU(sen_packed, h_init)
-		h_n = h_n.transpose(0, 1).reshape(left_batch_size, -1)
-		h_n = revertSequence(h_n, memo)
-		if need_h:
-			h = pad_packed_sequence(h)[0]
-			h = revertSequence(h, memo, True)
-			return h_n, h
-		else:
-			return h_n, None
+			h_init = torch.unsqueeze(h_init, 0)
+		h_now = h_init[0]
+		hs = []
+
+		for i in range(seqlen):
+			h_now = self.cell_forward(incoming[i], h_now) \
+				* Tensor((length > np.ones(batch_size) * i).astype(float)).unsqueeze(-1)
+			hs.append(h_now)
+
+		return h_now, hs
 
 	def init_forward(self, batch_size, h_init=None):
 		if h_init is None:
 			h_init = self.getInitialParameter(batch_size)
 		else:
 			h_init = torch.unsqueeze(h_init, 0)
-		h_history = h_init
 		h = h_init[0]
 
 		def nextStep(incoming, stopmask):
-			nonlocal h_history, h
+			nonlocal h
 			h = self.cell_forward(incoming, h) * (1 - stopmask).float().unsqueeze(-1)
 			return h
 
 		return nextStep
 
+	def init_forward_3d(self, batch_size, top_k, h_init=None):
+		if h_init is None:
+			h_init = self.getInitialParameter(batch_size)
+		else:
+			h_init = torch.unsqueeze(h_init, 0)
+		h_now = h_init[0].unsqueeze(1).expand(-1, top_k, -1) # batch_size * top_k * hidden_size
+
+		def nextStep(incoming, stopmask, regroup=None):
+			nonlocal h_now
+			h_now = torch.gather(h_now, 1, regroup.unsqueeze(-1).repeat(1, 1, h_now.shape[-1]))
+			h_now = self.cell_forward(incoming, h_now) * (1 - stopmask).float().unsqueeze(-1) # batch_size * top_k * hidden_size
+			return h_now
+
+		return nextStep
+
 	def cell_forward(self, incoming, h):
+		shape = h.shape
 		return F_GRUCell( \
-				incoming, h, \
+				incoming.reshape(-1, incoming.shape[-1]), h.reshape(-1, h.shape[-1]), \
 				self.GRU.weight_ih_l0, self.GRU.weight_hh_l0, \
 				self.GRU.bias_ih_l0, self.GRU.bias_hh_l0, \
-		)
+		).reshape(*shape)
 
-	def freerun(self, inp, wLinearLayerCallback, mode='max', input_callback=None, no_unk=True):
+	def freerun(self, inp, wLinearLayerCallback, mode='max', input_callback=None, no_unk=True, top_k=10):
 		nextStep = self.init_forward(inp.batch_size, inp.get("init_h", None))
-		return self._freerun(inp, nextStep, wLinearLayerCallback, mode, input_callback, no_unk)
+		return self._freerun(inp, nextStep, wLinearLayerCallback, mode, input_callback, no_unk, top_k)
+
+	def beamsearch(self, inp, top_k, wLinearLayerCallback, input_callback=None, no_unk=True, length_penalty=0.7):
+		nextStep = self.init_forward_3d(inp.batch_size, top_k, inp.get("init_h", None))
+		return self._beamsearch(inp, top_k, nextStep, wLinearLayerCallback, input_callback, no_unk, length_penalty)
 
 class SingleAttnGRU(DecoderRNN):
 	def __init__(self, input_size, hidden_size, post_size, initpara=True, gru_input_attn=False):

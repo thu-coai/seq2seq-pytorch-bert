@@ -43,15 +43,15 @@ def run(*argv):
 	parser.add_argument('--datapath', type=str, default='resources://OpenSubtitles',
 		help='Directory for data set. Default: resources://OpenSubtitles')
 	parser.add_argument('--epoch', type=int, default=100,
-		help="Epoch for trainning. Default: 100")
+		help="Epoch for training. Default: 100")
 	parser.add_argument('--wvclass', type=str, default='Glove',
 		help="Wordvector class, none for not using pretrained wordvec. Default: Glove")
 	parser.add_argument('--wvpath', type=str, default="resources://Glove300d",
-		help="Directory for pretrained wordvector. Default: resources://Glove300d")
+		help="Resources of pretrained wordvector. Default: resources://Glove300d")
 	parser.add_argument('--bert_model', type=str, default="bert-base-uncased",
-		help="Directory for pretrained wordvector. Default: bert-base-uncased")
+		help="Name of bert model. Default: bert-base-uncased")
 	parser.add_argument('--bert_vocab', type=str, default="bert-base-uncased",
-		help="Directory for pretrained wordvector. Default: bert-base-uncased")
+		help="Name of bert vocab. Default: bert-base-uncased")
 
 	parser.add_argument('--out_dir', type=str, default="./output",
 		help='Output directory for test output. Default: ./output')

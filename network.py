@@ -3,7 +3,7 @@ import logging
 
 import torch
 from torch import nn
-from pytorch_pretrained_bert.modeling import BertPreTrainedModel, BertModel
+from transformers import BertModel, BertConfig
 
 from utils import zeros, LongTensor,\
 			BaseNetwork, MyGRU, Storage, gumbel_max, flattenSequence, SingleAttnGRU, SequenceBatchNorm
@@ -66,14 +66,17 @@ class BERTEncoder(nn.Module):
 		self.args = args = param.args
 		self.param = param
 
-		self.bert_exclude = BertModel.from_pretrained(args.bert_model)
+		if args.bert_model == "none":
+			self.bert_exclude = BertModel(BertConfig())
+		else:
+			self.bert_exclude = BertModel.from_pretrained(args.bert_model)
 		self.drop = nn.Dropout(args.droprate)
 
 	def forward(self, incoming):
 		incoming.hidden = hidden = Storage()
 		with torch.no_grad():
 			h, _ = self.bert_exclude(incoming.data.post_bert)
-		hidden.h = h[-1] # [length, batch, hidden]
+		hidden.h = h # [length, batch, hidden]
 		hidden.h_n = self.drop(hidden.h[0])
 		hidden.h = self.drop(hidden.h)
 

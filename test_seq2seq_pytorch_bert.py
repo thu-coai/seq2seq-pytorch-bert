@@ -53,6 +53,8 @@ def modify_args(args):
 	args.batch_per_epoch = 5
 	args.batch_size = 5
 	args.datapath = os.path.join(path, 'tests', 'dataloader', 'dummy_opensubtitles')
+	args.bert_model = "none"
+	args.cpu = True
 
 def test_train(mocker):
 	def side_effect_train(args, *others):
